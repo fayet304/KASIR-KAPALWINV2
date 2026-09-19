@@ -108,17 +108,20 @@ function switchTab(tab){
   document.getElementById('tab-semua').classList.toggle('active', tab==='semua');
   document.getElementById('tab-croscek').classList.toggle('active', tab==='croscek');
   document.getElementById('tab-log').classList.toggle('active', tab==='log');
+  document.getElementById('tab-setting').classList.toggle('active', tab==='setting');
   document.getElementById('panel-dashboard').classList.toggle('hidden', tab!=='dashboard');
   document.getElementById('panel-transaksi').classList.toggle('hidden', tab!=='transaksi');
   document.getElementById('panel-pending').classList.toggle('hidden', tab!=='pending');
   document.getElementById('panel-semua').classList.toggle('hidden', tab!=='semua');
   document.getElementById('panel-croscek').classList.toggle('hidden', tab!=='croscek');
   document.getElementById('panel-log').classList.toggle('hidden', tab!=='log');
+  document.getElementById('panel-setting').classList.toggle('hidden', tab!=='setting');
   if(tab==='dashboard') loadDashboard();
   if(tab==='pending') loadPending();
   if(tab==='semua') loadSemuaTransaksi();
   if(tab==='croscek') initCroscek();
   if(tab==='log') loadLog();
+  if(tab==='setting') loadRekening().then(renderSettingList);
 }
 
 // ---------- LOG AKTIVITAS ----------
@@ -388,6 +391,100 @@ async function loadDashboard(){
   document.getElementById('kas-ke-bank-list').innerHTML = keys.length
     ? keys.map(k=>`<div class="breakdown-row"><span>${k}</span><b>${formatRp(kkb[k])}</b></div>`).join('')
     : '<span style="color:var(--muted);font-size:13px">Belum ada data</span>';
+}
+
+// ---------- SETTING REKENING ----------
+function renderSettingList(){
+  const el = document.getElementById('setting-rekening-list');
+  if(!rekeningData.length){ el.innerHTML = '<div class="card" style="text-align:center;color:var(--muted)">Belum ada rekening</div>'; return; }
+  el.innerHTML = rekeningData.map(r=>`
+    <div class="rk-row">
+      <div>
+        <div class="crk-nama">${r.tipe==='Bank' ? r.jenis_bank+' — ' : ''}${r.nama_akun}</div>
+        <div class="h-time">${r.tipe}</div>
+      </div>
+      <div>${formatRp(r.saldo)}</div>
+      <div class="rk-flags">
+        <span class="rk-flag ${isTrue(r.aktif)?'on':''}">${isTrue(r.aktif)?'Aktif':'Nonaktif'}</span>
+        ${r.tipe==='Bank' ? `<span class="rk-flag ${isTrue(r.bisa_deposit)?'on':''}">Depo</span><span class="rk-flag ${isTrue(r.bisa_withdraw)?'on':''}">WD</span>` : ''}
+      </div>
+      <div class="action-btns">
+        <button class="btn-edit" onclick="bukaModalRekening('${r.id}')">Edit</button>
+        <button class="btn-hapus" onclick="hapusRekening('${r.id}')">Hapus</button>
+      </div>
+    </div>`).join('');
+}
+
+function toggleFieldBank(){
+  const isBank = document.getElementById('rk-tipe').value === 'Bank';
+  document.getElementById('rk-jenis-bank-wrap').classList.toggle('hidden', !isBank);
+  document.getElementById('rk-deposit-wrap').classList.toggle('hidden', !isBank);
+  document.getElementById('rk-withdraw-wrap').classList.toggle('hidden', !isBank);
+}
+
+function bukaModalRekening(id){
+  const rek = id ? rekeningData.find(r=>r.id===id) : null;
+
+  document.getElementById('modal-rekening-title').textContent = id ? 'Edit Rekening' : 'Tambah Rekening';
+  document.getElementById('rk-id').value = id || '';
+  document.getElementById('rk-tipe').value = rek ? rek.tipe : 'Bank';
+  document.getElementById('rk-tipe').disabled = !!id; // tipe gak bisa diubah setelah dibuat
+  document.getElementById('rk-jenis-bank').value = rek ? (rek.jenis_bank==='-'?'':rek.jenis_bank) : '';
+  document.getElementById('rk-nama-akun').value = rek ? rek.nama_akun : '';
+  document.getElementById('rk-kode-login').value = rek ? (rek.kode_login||'') : '';
+  document.getElementById('rk-kode-transfer').value = rek ? (rek.kode_transfer||'') : '';
+  document.getElementById('rk-aktif').checked = rek ? isTrue(rek.aktif) : true;
+  document.getElementById('rk-bisa-deposit').checked = rek ? isTrue(rek.bisa_deposit) : true;
+  document.getElementById('rk-bisa-withdraw').checked = rek ? isTrue(rek.bisa_withdraw) : true;
+
+  // saldo cuma bisa diisi pas TAMBAH baru — pas edit disembunyikan biar saldo gak bisa diubah lewat sini
+  document.getElementById('rk-saldo-awal-wrap').classList.toggle('hidden', !!id);
+  document.getElementById('rk-saldo-awal').value = '0';
+
+  toggleFieldBank();
+  document.getElementById('modal-rekening').classList.remove('hidden');
+}
+
+function tutupModalRekening(){
+  document.getElementById('modal-rekening').classList.add('hidden');
+}
+
+async function simpanRekening(e){
+  e.preventDefault();
+  const id = document.getElementById('rk-id').value;
+  const payload = {
+    id,
+    user_id: currentUser.user_id,
+    tipe: document.getElementById('rk-tipe').value,
+    jenis_bank: document.getElementById('rk-jenis-bank').value || '-',
+    nama_akun: document.getElementById('rk-nama-akun').value,
+    kode_login: document.getElementById('rk-kode-login').value,
+    kode_transfer: document.getElementById('rk-kode-transfer').value,
+    aktif: document.getElementById('rk-aktif').checked,
+    bisa_deposit: document.getElementById('rk-bisa-deposit').checked,
+    bisa_withdraw: document.getElementById('rk-bisa-withdraw').checked
+  };
+
+  let res;
+  if(id){
+    res = await callApi('updateRekening', payload);
+  } else {
+    payload.saldo_awal = rawAngka(document.getElementById('rk-saldo-awal').value);
+    res = await callApi('addRekening', payload);
+  }
+
+  if(res.success){
+    showToast(id ? 'Rekening diperbarui' : 'Rekening ditambahkan');
+    tutupModalRekening();
+    loadRekening().then(renderSettingList);
+  } else showToast(res.message || 'Gagal menyimpan');
+}
+
+async function hapusRekening(id){
+  if(!confirm('Yakin hapus rekening ini? Histori transaksi lama yang terkait tetap ada, tapi rekening ini tidak akan muncul lagi di pilihan.')) return;
+  const res = await callApi('deleteRekening', {id, user_id: currentUser.user_id});
+  if(res.success){ showToast('Rekening dihapus'); loadRekening().then(renderSettingList); }
+  else showToast(res.message || 'Gagal menghapus');
 }
 
 // ---------- REKENING ----------
