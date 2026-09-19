@@ -36,6 +36,7 @@
     <button id="tab-semua" onclick="switchTab('semua')">📋 Semua</button>
     <button id="tab-croscek" onclick="switchTab('croscek')">🔄 Croscek</button>
     <button id="tab-log" onclick="switchTab('log')">📜 Log</button>
+    <button id="tab-setting" onclick="switchTab('setting')">⚙️ Setting</button>
   </div>
 
   <!-- DASHBOARD -->
@@ -190,6 +191,57 @@
       <button class="btn-primary" style="width:auto" onclick="document.getElementById('filter-log-tanggal').value='';loadLog()">Reset</button>
     </div>
     <div id="log-list"></div>
+  </div>
+
+  <!-- SETTING REKENING -->
+  <div id="panel-setting" class="hidden">
+    <button class="btn-primary" style="width:auto;margin-bottom:16px" onclick="bukaModalRekening()">+ Tambah Rekening</button>
+
+    <div class="rk-row rk-header">
+      <div>Rekening</div>
+      <div>Saldo</div>
+      <div>Status</div>
+      <div>Aksi</div>
+    </div>
+    <div id="setting-rekening-list"></div>
+  </div>
+
+  <!-- MODAL REKENING (tambah/edit) -->
+  <div id="modal-rekening" class="modal-overlay hidden">
+    <div class="modal-box">
+      <h3 id="modal-rekening-title">Tambah Rekening</h3>
+      <form onsubmit="simpanRekening(event)">
+        <input type="hidden" id="rk-id">
+        <label>Tipe</label>
+        <select id="rk-tipe" onchange="toggleFieldBank()">
+          <option value="Bank">Bank</option>
+          <option value="Kas">Kas</option>
+        </select>
+        <div id="rk-jenis-bank-wrap">
+          <label>Jenis Bank</label>
+          <input id="rk-jenis-bank" placeholder="Contoh: BCA">
+        </div>
+        <label>Nama Akun</label>
+        <input id="rk-nama-akun" placeholder="Contoh: BCA Kasir 1" required>
+        <div id="rk-saldo-awal-wrap">
+          <label>Saldo Awal</label>
+          <input id="rk-saldo-awal" type="text" inputmode="numeric" oninput="this.value=formatNominalInput(this.value)" value="0">
+        </div>
+        <label>Kode Akses Login (opsional)</label>
+        <input id="rk-kode-login" placeholder="Contoh: Gun168gn">
+        <label>Kode Transfer (opsional)</label>
+        <input id="rk-kode-transfer" placeholder="Contoh: 778989">
+        <div style="display:flex;gap:16px;flex-wrap:wrap;margin:10px 0">
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="rk-aktif" style="width:auto;margin:0" checked> Aktif</label>
+          <label id="rk-deposit-wrap" style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="rk-bisa-deposit" style="width:auto;margin:0" checked> Bisa Depo</label>
+          <label id="rk-withdraw-wrap" style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="rk-bisa-withdraw" style="width:auto;margin:0" checked> Bisa WD</label>
+        </div>
+        <div style="display:flex;gap:10px;margin-top:10px">
+          <button type="button" class="btn-secondary" style="flex:1" onclick="tutupModalRekening()">Batal</button>
+          <button type="submit" class="btn-primary" style="flex:1">Simpan</button>
+        </div>
+      </form>
+    </div>
   </div>
 
   <!-- MODAL EDIT -->
