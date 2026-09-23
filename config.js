@@ -5,7 +5,7 @@
 // =====================================================================
 
 // URL Web App hasil deploy Google Apps Script kamu
-const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwEqifF2p_NYYFTUuc8g-LnvDvv0clzCqDkXZnpTcwysMQO9XODzd98JYc5mWkOmbRN/exec';
+const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwOYdvDuDkYqDCKzb2LAaLAD8D07kWfpW-MnGX981SjMGkMNtI63wv4s33Y2k9dYmPK/exec';
 
 // Link LINE CS buat tombol "Lupa sandi?" di halaman login
 const LINE_CS_URL = 'https://line.me/ti/p/GANTI_DENGAN_ID_LINE_CS';
