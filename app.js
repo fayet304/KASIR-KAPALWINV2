@@ -24,12 +24,24 @@ function renderBranding(){
 renderBranding();
 
 async function callApi(action, payload={}) {
-  const res = await fetch(APPS_SCRIPT_URL, {
-    method:'POST',
-    headers:{'Content-Type':'text/plain;charset=utf-8'},
-    body: JSON.stringify({action, payload})
-  });
-  return res.json();
+  const controller = new AbortController();
+  const timeout = setTimeout(()=>controller.abort(), 15000);
+  try {
+    const res = await fetch(APPS_SCRIPT_URL, {
+      method:'POST',
+      headers:{'Content-Type':'text/plain;charset=utf-8'},
+      body: JSON.stringify({action, payload}),
+      signal: controller.signal
+    });
+    clearTimeout(timeout);
+    return await res.json();
+  } catch(err){
+    clearTimeout(timeout);
+    if(err.name === 'AbortError'){
+      return { success:false, message:'Koneksi ke server kelamaan (timeout 15 detik). Cek internet atau coba lagi.' };
+    }
+    return { success:false, message:'Gagal terhubung ke server: ' + err.message };
+  }
 }
 
 function showToast(msg){
@@ -241,10 +253,4 @@ function bukaSesiFotoCroscek(croscekId, items){
   el.innerHTML = `
     <div class="histori-title">📷 Sesi Foto Bukti — Serah Terima Ini</div>
     <div class="card" style="margin-bottom:16px;font-size:13px;color:var(--muted)">Foto layar saldo tiap bank/kas di bawah sebagai bukti. Foto langsung tersimpan & tercatat linknya.</div>
-    <div id="crk-foto-rows"></div>
-  `;
-  document.getElementById('crk-foto-rows').innerHTML = items.map(it=>`
-    <div class="foto-row">
-      <div class="foto-nama">${it.nama_akun}</div>
-      <div class="foto-status" id="foto-status-${it.rekening_id}">Belum difoto</div>
-      <input type="file" accept="image/*" capture="environment" id="foto-input-${it.rekening_id}" class="hidden" onchange="prosesFotoCroscek(event, '${croscekId}', '${it.rekening_id}', '${it.nama_akun.replace(/'/g, "\\'")}')
+    <div id="crk-
