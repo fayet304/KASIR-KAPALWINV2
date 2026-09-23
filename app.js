@@ -62,7 +62,15 @@ async function doLogin(){
   errEl.classList.add('hidden');
   if(!user_id || !password){ errEl.textContent='Isi User ID dan sandi'; errEl.classList.remove('hidden'); return; }
 
+  const btn = document.getElementById('btn-login');
+  btn.disabled = true;
+  btn.textContent = 'Memproses...';
+
   const res = await callApi('login', {user_id, password});
+
+  btn.disabled = false;
+  btn.textContent = 'Masuk';
+
   if(!res.success){ errEl.textContent = res.message || 'Login gagal'; errEl.classList.remove('hidden'); return; }
 
   currentUser = res;
@@ -83,25 +91,35 @@ function logout(){
   document.getElementById('view-login').classList.remove('hidden');
 }
 
-function enterApp(){
+async function enterApp(){
   document.getElementById('view-login').classList.add('hidden');
   document.getElementById('view-app').classList.remove('hidden');
+  switchTab('dashboard', true); // tampilkan kerangka dulu, datanya nyusul dari bootstrap
+
+  const res = await callApi('bootstrap');
+  if(res.success){
+    rekeningData = res.rekening;
+    renderKasDropdowns();
+    renderDashboard(res);
+    renderPending(res.pending);
+    updateBadge(res.pending.length);
+  }
+
   startHeartbeat();
-  loadRekening();
-  loadPending();
-  switchTab('dashboard');
 }
 
 function startHeartbeat(){
-  callApi('heartbeat', {user_id: currentUser.user_id});
-  heartbeatTimer = setInterval(()=>{
-    callApi('heartbeat', {user_id: currentUser.user_id});
-    loadPending();
+  heartbeatTimer = setInterval(async ()=>{
+    const res = await callApi('heartbeat', {user_id: currentUser.user_id});
+    if(res.success && res.pending){
+      renderPending(res.pending);
+      updateBadge(res.pending.length);
+    }
   }, 60000);
 }
 
 // ---------- TAB SWITCH ----------
-function switchTab(tab){
+function switchTab(tab, skipLoad){
   document.getElementById('tab-dashboard').classList.toggle('active', tab==='dashboard');
   document.getElementById('tab-transaksi').classList.toggle('active', tab==='transaksi');
   document.getElementById('tab-pending').classList.toggle('active', tab==='pending');
@@ -116,6 +134,9 @@ function switchTab(tab){
   document.getElementById('panel-croscek').classList.toggle('hidden', tab!=='croscek');
   document.getElementById('panel-log').classList.toggle('hidden', tab!=='log');
   document.getElementById('panel-setting').classList.toggle('hidden', tab!=='setting');
+
+  if(skipLoad) return; // dipakai pas bootstrap udah nyediain semua data, gak perlu fetch ulang
+
   if(tab==='dashboard') loadDashboard();
   if(tab==='pending') loadPending();
   if(tab==='semua') loadSemuaTransaksi();
@@ -191,7 +212,8 @@ async function submitCroscek(e){
     const input = row.querySelector('.crk-aktual');
     const aktual = rawAngka(input.value);
     if(aktual==='') return;
-    items.push({ rekening_id: row.dataset.id, saldo_aktual: aktual });
+    const namaAkun = row.querySelector('.crk-nama').textContent;
+    items.push({ rekening_id: row.dataset.id, saldo_aktual: aktual, nama_akun: namaAkun });
   });
   if(!items.length){ showToast('Isi minimal 1 saldo aktual'); return; }
 
@@ -208,443 +230,21 @@ async function submitCroscek(e){
     document.getElementById('crk-catatan').value='';
     renderCroscekForm();
     loadCroscekHistori();
+    bukaSesiFotoCroscek(res.croscek_id, items);
   } else showToast(res.message || 'Gagal submit croscek');
 }
 
-async function loadCroscekHistori(){
-  const res = await callApi('getCroscekHistori');
-  if(!res.success) return;
-  renderCroscekHistori(res.data);
-}
-
-function renderCroscekHistori(rows){
-  const groups = {};
-  rows.forEach(r=>{
-    if(!groups[r.croscek_id]) groups[r.croscek_id] = { id:r.croscek_id, timestamp:r.timestamp, dari:r.kasir_dari, ke:r.kasir_ke, catatan:r.catatan, items:[], total:0 };
-    groups[r.croscek_id].items.push(r);
-    groups[r.croscek_id].total += Number(r.selisih||0);
-  });
-  const list = Object.values(groups).sort((a,b)=> new Date(b.timestamp)-new Date(a.timestamp));
-
-  const el = document.getElementById('crk-histori');
-  if(!list.length){ el.innerHTML = '<div class="card" style="text-align:center;color:var(--muted)">Belum ada histori croscek</div>'; return; }
-
-  el.innerHTML = list.map(g=>`
-    <div class="histori-row" style="flex-direction:column;align-items:stretch;cursor:pointer" onclick="toggleCroscekDetail('${g.id}')">
-      <div style="display:flex;justify-content:space-between;align-items:center">
-        <div>
-          <div class="h-nama">${g.dari} → ${g.ke}</div>
-          <div class="h-time">${new Date(g.timestamp).toLocaleString('id-ID')}</div>
-        </div>
-        <div class="h-status ${g.total===0?'Proses':'Pending'}">${g.total===0?'Aman':'Selisih '+formatRp(g.total)}</div>
-      </div>
-      <div id="crk-detail-${g.id}" class="hidden" style="margin-top:10px">
-        ${g.items.map(it=>`<div class="breakdown-row"><span>${it.nama_akun}</span><span>Sistem ${formatRp(it.saldo_sistem)} • Aktual ${formatRp(it.saldo_aktual)} • Selisih ${formatRp(it.selisih)}</span></div>`).join('')}
-        ${g.catatan ? `<div class="breakdown-row"><span>Catatan</span><span>${g.catatan}</span></div>` : ''}
-      </div>
-    </div>`).join('');
-}
-
-function toggleCroscekDetail(id){
-  document.getElementById('crk-detail-'+id).classList.toggle('hidden');
-}
-
-// ---------- SEMUA TRANSAKSI ----------
-let semuaTransaksiCache = [];
-
-function labelJenis(tipe){
-  return {Depo:'Depo', WD:'WD', SetorKas:'Kas (Bank→Kas)', PengajuanKas:'Kas (Kas→Bank)'}[tipe] || tipe;
-}
-
-async function loadSemuaTransaksi(){
-  const tanggal = document.getElementById('filter-tanggal').value;
-  const tipe = document.getElementById('filter-jenis').value;
-  const res = await callApi('getAllTransaksi', {tanggal, tipe});
-  if(!res.success) return;
-  semuaTransaksiCache = res.data;
-  renderTabelSemua(res.data);
-}
-
-function resetFilterSemua(){
-  document.getElementById('filter-tanggal').value = '';
-  document.getElementById('filter-jenis').value = '';
-  loadSemuaTransaksi();
-}
-
-function renderTabelSemua(list){
-  const tbody = document.getElementById('semua-tbody');
-  if(!list.length){ tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--muted)">Tidak ada data</td></tr>'; return; }
-  tbody.innerHTML = list.map(t=>`
-    <tr>
-      <td>${new Date(t.timestamp).toLocaleString('id-ID')}</td>
-      <td>${labelJenis(t.tipe)}</td>
-      <td>${[t.nama_bank_asal, t.nama_bank_tujuan].filter(Boolean).join(' → ')}</td>
-      <td>${t.nama_pihak || '-'}</td>
-      <td>${formatRp(t.nominal)}</td>
-      <td>${formatRp(t.admin_fee)}</td>
-      <td>${t.status ? `<span class="h-status ${t.status}">${t.status}</span>` : '-'}</td>
-      <td>
-        <div class="action-btns">
-          <button class="btn-edit" onclick="bukaModalEdit('${t.id}')">Edit</button>
-          <button class="btn-hapus" onclick="hapusTransaksi('${t.id}')">Hapus</button>
-        </div>
-      </td>
-    </tr>`).join('');
-}
-
-function bukaModalEdit(id){
-  const t = semuaTransaksiCache.find(x=>x.id===id);
-  if(!t) return;
-  document.getElementById('edit-id').value = t.id;
-  document.getElementById('edit-nama-pihak').value = t.nama_pihak || '';
-  document.getElementById('edit-nominal').value = formatNominalInput(t.nominal);
-  document.getElementById('edit-admin-fee').value = formatNominalInput(t.admin_fee || 0);
-  document.getElementById('edit-status').value = t.status || 'Proses';
-  document.getElementById('edit-status-wrap').classList.toggle('hidden', t.tipe!=='Depo');
-  document.getElementById('modal-edit').classList.remove('hidden');
-}
-
-function tutupModalEdit(){
-  document.getElementById('modal-edit').classList.add('hidden');
-}
-
-async function simpanEditTransaksi(e){
-  e.preventDefault();
-  const payload = {
-    id: document.getElementById('edit-id').value,
-    user_id: currentUser.user_id,
-    nama_pihak: document.getElementById('edit-nama-pihak').value,
-    nominal: rawAngka(document.getElementById('edit-nominal').value),
-    admin_fee: rawAngka(document.getElementById('edit-admin-fee').value),
-    status: document.getElementById('edit-status').value
-  };
-  const res = await callApi('editTransaksi', payload);
-  if(res.success){
-    showToast('Transaksi diperbarui');
-    tutupModalEdit();
-    loadSemuaTransaksi();
-    loadRekening();
-    loadPending();
-  } else showToast(res.message || 'Gagal menyimpan');
-}
-
-async function hapusTransaksi(id){
-  if(!confirm('Yakin hapus transaksi ini? Saldo terkait akan dikembalikan seperti semula.')) return;
-  const res = await callApi('deleteTransaksi', {id, user_id: currentUser.user_id});
-  if(res.success){
-    showToast('Transaksi dihapus');
-    loadSemuaTransaksi();
-    loadRekening();
-    loadPending();
-  } else showToast(res.message || 'Gagal menghapus');
-}
-
-// ---------- PENDING ----------
-async function loadPending(){
-  const res = await callApi('getPending');
-  if(!res.success) return;
-  renderPending(res.data);
-  updateBadge(res.data.length);
-}
-
-function renderPending(list){
-  const el = document.getElementById('pending-list');
-  if(!list.length){ el.innerHTML = '<div class="card" style="text-align:center;color:var(--muted)">Tidak ada transaksi pending</div>'; return; }
-  el.innerHTML = list.map(t=>`
-    <div class="histori-row" style="align-items:center">
-      <div>
-        <div class="h-nama">${t.nama_bank} — ${t.nama_pihak || '-'}</div>
-        <div class="h-time">${new Date(t.timestamp).toLocaleString('id-ID')} • ID: ${t.user_id}</div>
-      </div>
-      <div style="text-align:right">
-        <div class="h-nominal">${formatRp(t.nominal)}</div>
-        <button class="btn-mini" onclick="tandaiProses('${t.id}')">Tandai Proses</button>
-      </div>
-    </div>`).join('');
-}
-
-async function tandaiProses(id){
-  const res = await callApi('updateStatus', {id, status:'Proses', user_id: currentUser.user_id});
-  if(res.success){ showToast('Status diperbarui'); loadPending(); }
-  else showToast(res.message || 'Gagal update');
-}
-
-function updateBadge(count){
-  const badge = document.getElementById('pending-badge');
-  if(count>0){ badge.textContent = count; badge.classList.remove('hidden'); }
-  else badge.classList.add('hidden');
-}
-
-// ---------- DASHBOARD ----------
-async function loadDashboard(){
-  const res = await callApi('getDashboard');
-  if(!res.success) return;
-  document.getElementById('staff-online-list').innerHTML = res.staffOnline.length
-    ? res.staffOnline.map(s=>`<span class="staff-chip">🟢 ${s.nama}</span>`).join('')
-    : '<span style="color:var(--muted);font-size:13px">Tidak ada staff online</span>';
-  document.getElementById('total-masuk').textContent = formatRp(res.totalMasuk);
-  document.getElementById('total-keluar').textContent = formatRp(res.totalKeluar);
-  document.getElementById('total-setor').textContent = formatRp(res.setorTotal);
-
-  const kkb = res.kasKeBank || {};
-  const keys = Object.keys(kkb);
-  document.getElementById('kas-ke-bank-list').innerHTML = keys.length
-    ? keys.map(k=>`<div class="breakdown-row"><span>${k}</span><b>${formatRp(kkb[k])}</b></div>`).join('')
-    : '<span style="color:var(--muted);font-size:13px">Belum ada data</span>';
-}
-
-// ---------- SETTING REKENING ----------
-function renderSettingList(){
-  const el = document.getElementById('setting-rekening-list');
-  if(!rekeningData.length){ el.innerHTML = '<div class="card" style="text-align:center;color:var(--muted)">Belum ada rekening</div>'; return; }
-  el.innerHTML = rekeningData.map(r=>`
-    <div class="rk-row">
-      <div>
-        <div class="crk-nama">${r.tipe==='Bank' ? r.jenis_bank+' — ' : ''}${r.nama_akun}</div>
-        <div class="h-time">${r.tipe}</div>
-      </div>
-      <div>${formatRp(r.saldo)}</div>
-      <div class="rk-flags">
-        <span class="rk-flag ${isTrue(r.aktif)?'on':''}">${isTrue(r.aktif)?'Aktif':'Nonaktif'}</span>
-        ${r.tipe==='Bank' ? `<span class="rk-flag ${isTrue(r.bisa_deposit)?'on':''}">Depo</span><span class="rk-flag ${isTrue(r.bisa_withdraw)?'on':''}">WD</span>` : ''}
-      </div>
-      <div class="action-btns">
-        <button class="btn-edit" onclick="bukaModalRekening('${r.id}')">Edit</button>
-        <button class="btn-hapus" onclick="hapusRekening('${r.id}')">Hapus</button>
-      </div>
-    </div>`).join('');
-}
-
-function toggleFieldBank(){
-  const isBank = document.getElementById('rk-tipe').value === 'Bank';
-  document.getElementById('rk-jenis-bank-wrap').classList.toggle('hidden', !isBank);
-  document.getElementById('rk-deposit-wrap').classList.toggle('hidden', !isBank);
-  document.getElementById('rk-withdraw-wrap').classList.toggle('hidden', !isBank);
-}
-
-function bukaModalRekening(id){
-  const rek = id ? rekeningData.find(r=>r.id===id) : null;
-
-  document.getElementById('modal-rekening-title').textContent = id ? 'Edit Rekening' : 'Tambah Rekening';
-  document.getElementById('rk-id').value = id || '';
-  document.getElementById('rk-tipe').value = rek ? rek.tipe : 'Bank';
-  document.getElementById('rk-tipe').disabled = !!id; // tipe gak bisa diubah setelah dibuat
-  document.getElementById('rk-jenis-bank').value = rek ? (rek.jenis_bank==='-'?'':rek.jenis_bank) : '';
-  document.getElementById('rk-nama-akun').value = rek ? rek.nama_akun : '';
-  document.getElementById('rk-kode-login').value = rek ? (rek.kode_login||'') : '';
-  document.getElementById('rk-kode-transfer').value = rek ? (rek.kode_transfer||'') : '';
-  document.getElementById('rk-aktif').checked = rek ? isTrue(rek.aktif) : true;
-  document.getElementById('rk-bisa-deposit').checked = rek ? isTrue(rek.bisa_deposit) : true;
-  document.getElementById('rk-bisa-withdraw').checked = rek ? isTrue(rek.bisa_withdraw) : true;
-
-  // saldo cuma bisa diisi pas TAMBAH baru — pas edit disembunyikan biar saldo gak bisa diubah lewat sini
-  document.getElementById('rk-saldo-awal-wrap').classList.toggle('hidden', !!id);
-  document.getElementById('rk-saldo-awal').value = '0';
-
-  toggleFieldBank();
-  document.getElementById('modal-rekening').classList.remove('hidden');
-}
-
-function tutupModalRekening(){
-  document.getElementById('modal-rekening').classList.add('hidden');
-}
-
-async function simpanRekening(e){
-  e.preventDefault();
-  const id = document.getElementById('rk-id').value;
-  const payload = {
-    id,
-    user_id: currentUser.user_id,
-    tipe: document.getElementById('rk-tipe').value,
-    jenis_bank: document.getElementById('rk-jenis-bank').value || '-',
-    nama_akun: document.getElementById('rk-nama-akun').value,
-    kode_login: document.getElementById('rk-kode-login').value,
-    kode_transfer: document.getElementById('rk-kode-transfer').value,
-    aktif: document.getElementById('rk-aktif').checked,
-    bisa_deposit: document.getElementById('rk-bisa-deposit').checked,
-    bisa_withdraw: document.getElementById('rk-bisa-withdraw').checked
-  };
-
-  let res;
-  if(id){
-    res = await callApi('updateRekening', payload);
-  } else {
-    payload.saldo_awal = rawAngka(document.getElementById('rk-saldo-awal').value);
-    res = await callApi('addRekening', payload);
-  }
-
-  if(res.success){
-    showToast(id ? 'Rekening diperbarui' : 'Rekening ditambahkan');
-    tutupModalRekening();
-    loadRekening().then(renderSettingList);
-  } else showToast(res.message || 'Gagal menyimpan');
-}
-
-async function hapusRekening(id){
-  if(!confirm('Yakin hapus rekening ini? Histori transaksi lama yang terkait tetap ada, tapi rekening ini tidak akan muncul lagi di pilihan.')) return;
-  const res = await callApi('deleteRekening', {id, user_id: currentUser.user_id});
-  if(res.success){ showToast('Rekening dihapus'); loadRekening().then(renderSettingList); }
-  else showToast(res.message || 'Gagal menghapus');
-}
-
-// ---------- REKENING ----------
-function isTrue(v){ return v===true || v==='TRUE' || v==='true'; }
-
-async function loadRekening(){
-  const res = await callApi('getRekening');
-  if(!res.success) return;
-  rekeningData = res.data;
-  renderKasDropdowns();
-}
-
-function pilihRekening(id){
-  selectedRekeningId = id;
-  renderBankPills();
-  renderBankCardBesar();
-  loadHistori();
-}
-
-async function loadHistori(){
-  if(!selectedRekeningId || !currentJenis) return;
-  const res = await callApi('getHistori', {rekening_id: selectedRekeningId, tipe: currentJenis});
-  if(res.success) renderHistori(res.data);
-}
-
-function renderHistori(list){
-  const el = document.getElementById('dw-histori-list');
-  if(!list.length){ el.innerHTML = '<div style="color:var(--muted);font-size:13px">Belum ada transaksi</div>'; return; }
-  el.innerHTML = list.map(t=>`
-    <div class="histori-row">
-      <div>
-        <div class="h-nama">${t.nama_pihak || '-'}</div>
-        <div class="h-time">${new Date(t.timestamp).toLocaleString('id-ID')}</div>
-      </div>
-      <div style="text-align:right">
-        <div class="h-nominal">${formatRp(t.nominal)}</div>
-        ${t.status ? `<div class="h-status ${t.status}">${t.status}</div>` : ''}
-      </div>
-    </div>`).join('');
-}
-
-function renderBankCardBesar(){
-  const el = document.getElementById('bank-card-besar');
-  const rek = rekeningData.find(r=>r.id===selectedRekeningId);
-  if(!rek){ el.classList.add('hidden'); return; }
+// ---------- SESI FOTO BUKTI CROSCEK ----------
+function bukaSesiFotoCroscek(croscekId, items){
+  const el = document.getElementById('crk-foto-session');
   el.classList.remove('hidden');
-
-  const adaKode = rek.kode_login || rek.kode_transfer;
   el.innerHTML = `
-    <div>
-      <div class="bj">${rek.jenis_bank}</div>
-      <div class="bn">${rek.nama_akun}</div>
-      <div class="bs-label">Saldo Akhir</div>
-      <div class="bs">${formatRp(rek.saldo)}</div>
-    </div>
-    ${adaKode ? `
-    <div class="bank-kode-box">
-      ${rek.kode_login ? `<div class="kk-label">Kode Akses Login</div><div class="kk-val">${rek.kode_login}</div>` : ''}
-      ${rek.kode_transfer ? `<div class="kk-label">Kode Transfer</div><div class="kk-val">${rek.kode_transfer}</div>` : ''}
-    </div>` : ''}
+    <div class="histori-title">📷 Sesi Foto Bukti — Serah Terima Ini</div>
+    <div class="card" style="margin-bottom:16px;font-size:13px;color:var(--muted)">Foto layar saldo tiap bank/kas di bawah sebagai bukti. Foto langsung tersimpan & tercatat linknya.</div>
+    <div id="crk-foto-rows"></div>
   `;
-}
-
-let arahKas = 'b2k'; // b2k = Bank ke Kas, k2b = Kas ke Bank
-
-function pilihArahKas(arah){
-  arahKas = arah;
-  document.getElementById('kas-dir-b2k').classList.toggle('active', arah==='b2k');
-  document.getElementById('kas-dir-k2b').classList.toggle('active', arah==='k2b');
-  renderKasDropdowns();
-}
-
-function renderKasDropdowns(){
-  const bankAktif = rekeningData.filter(r=>r.tipe==='Bank' && isTrue(r.aktif));
-  const kasAktif = rekeningData.filter(r=>r.tipe==='Kas' && isTrue(r.aktif));
-  const bankOpt = bankAktif.map(b=>`<option value="${b.id}">${b.jenis_bank} - ${b.nama_akun}</option>`).join('');
-  const kasOpt = kasAktif.map(k=>`<option value="${k.id}">${k.nama_akun}</option>`).join('');
-
-  if(arahKas==='b2k'){
-    document.getElementById('kas-label-asal').textContent = 'Bank Asal';
-    document.getElementById('kas-label-tujuan').textContent = 'Bank Tujuan (Kas)';
-    document.getElementById('kas-asal').innerHTML = bankOpt;
-    document.getElementById('kas-tujuan').innerHTML = kasOpt;
-  } else {
-    document.getElementById('kas-label-asal').textContent = 'Kas Asal';
-    document.getElementById('kas-label-tujuan').textContent = 'Bank Tujuan';
-    document.getElementById('kas-asal').innerHTML = kasOpt;
-    document.getElementById('kas-tujuan').innerHTML = bankOpt;
-  }
-}
-
-// ---------- JENIS: Depo / WD / Kas ----------
-function pilihJenis(jenis){
-  currentJenis = jenis;
-  selectedRekeningId = null;
-  document.getElementById('jenis-depo').classList.toggle('active', jenis==='Depo');
-  document.getElementById('jenis-wd').classList.toggle('active', jenis==='WD');
-  document.getElementById('jenis-kas').classList.toggle('active', jenis==='Kas');
-
-  document.getElementById('form-bank-wrap').classList.toggle('hidden', jenis==='Kas');
-  document.getElementById('form-kas-wrap').classList.toggle('hidden', jenis!=='Kas');
-  document.getElementById('bank-card-besar').classList.add('hidden');
-  document.getElementById('dw-status-wrap').classList.toggle('hidden', jenis!=='Depo');
-  document.getElementById('dw-histori-list').innerHTML = '';
-
-  if(jenis==='Depo' || jenis==='WD') renderBankPills();
-  if(jenis==='Kas') renderKasDropdowns();
-}
-
-function renderBankPills(){
-  // Depo -> hanya bank dengan bisa_deposit aktif. WD -> hanya bank dengan bisa_withdraw aktif.
-  const filterKey = currentJenis==='Depo' ? 'bisa_deposit' : 'bisa_withdraw';
-  const bankList = rekeningData.filter(r=>r.tipe==='Bank' && isTrue(r.aktif) && isTrue(r[filterKey]));
-  document.getElementById('bank-pill-row').innerHTML = bankList.map(b=>`
-    <div class="bank-pill ${b.id===selectedRekeningId?'active':''}" onclick="pilihRekening('${b.id}')">${b.jenis_bank}</div>
-  `).join('');
-}
-
-// ---------- SUBMIT ----------
-async function submitDepoWd(e){
-  e.preventDefault();
-  if(!selectedRekeningId){ showToast('Pilih bank dulu'); return; }
-  const payload = {
-    tipe: currentJenis,
-    user_id: document.getElementById('dw-userid').value,
-    nama_pihak: document.getElementById('dw-nama-pihak').value,
-    nominal: rawAngka(document.getElementById('dw-nominal').value),
-    admin_fee: rawAngka(document.getElementById('dw-admin-fee').value),
-    status: currentJenis==='Depo' ? document.getElementById('dw-status').value : 'Proses'
-  };
-  if(currentJenis==='Depo') payload.rekening_tujuan = selectedRekeningId;
-  if(currentJenis==='WD') payload.rekening_asal = selectedRekeningId;
-
-  const res = await callApi('submitTransaksi', payload);
-  if(res.success){
-    showToast('Transaksi berhasil disimpan');
-    document.getElementById('form-depo-wd').reset();
-    loadRekening();
-    renderBankCardBesar();
-    loadHistori();
-    loadPending();
-  } else showToast(res.message || 'Gagal menyimpan');
-}
-
-async function submitKas(e){
-  e.preventDefault();
-  const payload = {
-    tipe: arahKas==='b2k' ? 'SetorKas' : 'PengajuanKas',
-    user_id: currentUser.user_id,
-    rekening_asal: document.getElementById('kas-asal').value,
-    rekening_tujuan: document.getElementById('kas-tujuan').value,
-    nominal: rawAngka(document.getElementById('kas-nominal').value)
-  };
-  const res = await callApi('submitTransaksi', payload);
-  if(res.success){ showToast('Transaksi kas berhasil'); e.target.reset(); loadRekening(); }
-  else showToast(res.message || 'Gagal menyimpan');
-}
-
-// ---------- INIT: cek sesi tersimpan ----------
-window.onload = function(){
-  const saved = localStorage.getItem('kasir_user');
-  if(saved){ currentUser = JSON.parse(saved); enterApp(); }
-};
+  document.getElementById('crk-foto-rows').innerHTML = items.map(it=>`
+    <div class="foto-row">
+      <div class="foto-nama">${it.nama_akun}</div>
+      <div class="foto-status" id="foto-status-${it.rekening_id}">Belum difoto</div>
+      <input type="file" accept="image/*" capture="environment" id="foto-input-${it.rekening_id}" class="hidden" onchange="prosesFotoCroscek(event, '${croscekId}', '${it.rekening_id}', '${it.nama_akun.replace(/'/g, "\\'")}')
